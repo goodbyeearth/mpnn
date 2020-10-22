@@ -14,6 +14,165 @@ def weights_init(m):
             m.bias.data.fill_(0)
 
 
+class GatedMPNN(nn.Module):
+    def __init__(self, action_space, num_agents, num_entities, input_size=16, hidden_dim=128, embed_dim=None,
+                 pos_index=2, norm_in=False, nonlin=nn.ReLU, n_heads=1, mask_dist=None, entity_mp=False):
+        super().__init__()
+
+        self.h_dim = hidden_dim
+        self.nonlin = nonlin
+        self.num_agents = num_agents  # number of agents
+        self.num_entities = num_entities  # number of entities
+        self.K = 3  # message passing rounds
+        self.embed_dim = self.h_dim if embed_dim is None else embed_dim
+        self.n_heads = n_heads
+        self.mask_dist = mask_dist
+        self.input_size = input_size
+        self.entity_mp = entity_mp
+        # this index must be from the beginning of observation vector
+        self.pos_index = pos_index
+
+        self.encoder = nn.Sequential(nn.Linear(self.input_size, self.h_dim),
+                                     self.nonlin(inplace=True))
+
+        self.messages = MultiHeadAttention(n_heads=self.n_heads, input_dim=self.h_dim, embed_dim=self.embed_dim)
+
+        self.update = nn.Sequential(nn.Linear(self.h_dim + self.embed_dim, self.h_dim),
+                                    self.nonlin())
+
+        self.value_head = nn.Sequential(nn.Linear(self.h_dim, self.h_dim),
+                                        self.nonlin(inplace=True),
+                                        nn.Linear(self.h_dim, 1))
+
+        self.policy_head = nn.Sequential(nn.Linear(self.h_dim, self.h_dim),
+                                         self.nonlin(inplace=True))
+
+        # gate
+        self.gate = nn.Sequential(nn.Linear(self.h_dim + self.embed_dim, 1),
+                                  nn.Sigmoid())
+
+        if self.entity_mp:
+            self.entity_encoder = nn.Sequential(nn.Linear(2, self.h_dim),
+                                                self.nonlin(inplace=True))
+
+            self.entity_messages = MultiHeadAttention(n_heads=1, input_dim=self.h_dim, embed_dim=self.embed_dim)
+
+            self.entity_update = nn.Sequential(nn.Linear(self.h_dim + self.embed_dim, self.h_dim),
+                                               self.nonlin(inplace=True))
+
+        num_actions = action_space.n
+        self.dist = Categorical(self.h_dim, num_actions)
+
+        self.is_recurrent = False
+
+        # for test
+        # print('input_size', input_size)    #simple spread: 4
+
+        if norm_in:
+            self.in_fn = nn.BatchNorm1d(self.input_size)
+            self.in_fn.weight.data.fill_(1)
+            self.in_fn.bias.data.fill_(0)
+        else:
+            self.in_fn = lambda x: x
+        self.apply(weights_init)
+
+        self.attn_mat = np.ones((num_agents, num_agents))
+
+        self.dropout_mask = None
+
+    def calculate_mask(self, inp):
+        # inp is batch_size x self.input_size where batch_size is num_processes*num_agents
+
+        pos = inp[:, self.pos_index:self.pos_index + 2]
+        bsz = inp.size(0) // self.num_agents
+        mask = torch.full(size=(bsz, self.num_agents, self.num_agents), fill_value=0, dtype=torch.uint8)
+
+        if self.mask_dist is not None and self.mask_dist > 0:
+            for i in range(1, self.num_agents):
+                shifted = torch.roll(pos, -bsz * i, 0)
+                dists = torch.norm(pos - shifted, dim=1)
+                restrict = dists > self.mask_dist
+                for x in range(self.num_agents):
+                    mask[:, x, (x + i) % self.num_agents].copy_(restrict[bsz * x:bsz * (x + 1)])
+
+        elif self.mask_dist is not None and self.mask_dist == -10:
+            if self.dropout_mask is None or bsz != self.dropout_mask.shape[
+                0] or np.random.random_sample() < 0.1:  # sample new dropout mask
+                temp = torch.rand(mask.size()) > 0.85
+                temp.diagonal(dim1=1, dim2=2).fill_(0)
+                self.dropout_mask = (temp + temp.transpose(1, 2)) != 0
+            mask.copy_(self.dropout_mask)
+
+        return mask
+
+    def _fwd(self, inp):
+        # inp should be (batch_size,input_size)
+        # inp - {iden, vel(2), pos(2), entities(...)}
+        agent_inp = inp[:, :self.input_size]
+        mask = self.calculate_mask(agent_inp)  # shape <batch_size/N,N,N> with 0 for comm allowed, 1 for restricted
+
+        # for test
+        # print('inp', inp.shape)              # 3 agent: (96, 10)            4 agent: (128, 12)
+        # print('agent_inp', agent_inp.shape)   # 3 agent: 有entity (96, 4), 无entity (96, 10)
+        # 4 agent: 有 entity (128, 4)，无 entity (128, 12)
+
+        h = self.encoder(agent_inp)  # should be (batch_size,self.h_dim)
+        if self.entity_mp:
+            landmark_inp = inp[:, self.input_size:]  # x,y pos of landmarks wrt agents
+            # should be (batch_size,self.num_entities,self.h_dim)
+            he = self.entity_encoder(landmark_inp.contiguous().view(-1, 2)).view(-1, self.num_entities, self.h_dim)
+            entity_message = self.entity_messages(h.unsqueeze(1), he).squeeze(1)  # should be (batch_size,self.h_dim)
+            h = self.entity_update(torch.cat((h, entity_message), 1))  # should be (batch_size,self.h_dim)
+
+        h = h.view(self.num_agents, -1, self.h_dim).transpose(0, 1)  # should be (batch_size/N,N,self.h_dim)
+
+        for k in range(self.K):
+            m, attn = self.messages(h, mask=mask, return_attn=True)  # should be <batch_size/N,N,self.embed_dim>
+            hm_concat = torch.cat((h, m), 2)     # <batch_size/N,N,self.h_dim + self.embed_dim>
+            h = self.update(hm_concat)  # should be <batch_size/N,N,self.h_dim>
+            if k == self.K - 1:
+                gate = self.gate(hm_concat)
+                h = gate * h
+
+        h = h.transpose(0, 1).contiguous().view(-1, self.h_dim)
+
+        self.attn_mat = attn.squeeze().detach().cpu().numpy()
+        return h  # should be <batch_size, self.h_dim> again
+
+    def forward(self, inp, state, mask=None):
+        raise NotImplementedError
+
+    def _value(self, x):
+        return self.value_head(x)
+
+    def _policy(self, x):
+        return self.policy_head(x)
+
+    def act(self, inp, state, mask=None, deterministic=False):
+        x = self._fwd(inp)
+        value = self._value(x)
+        dist = self.dist(self._policy(x))
+        if deterministic:
+            action = dist.mode()
+        else:
+            action = dist.sample()
+        action_log_probs = dist.log_probs(action).view(-1, 1)
+        return value, action, action_log_probs, state
+
+    def evaluate_actions(self, inp, state, mask, action):
+        x = self._fwd(inp)
+        value = self._value(x)
+        dist = self.dist(self._policy(x))
+        action_log_probs = dist.log_probs(action)
+        dist_entropy = dist.entropy().mean()
+        return value, action_log_probs, dist_entropy, state
+
+    def get_value(self, inp, state, mask):
+        x = self._fwd(inp)
+        value = self._value(x)
+        return value
+
+
 class MPNN(nn.Module):
     def __init__(self, action_space, num_agents, num_entities, input_size=16, hidden_dim=128, embed_dim=None,
                  pos_index=2, norm_in=False, nonlin=nn.ReLU, n_heads=1, mask_dist=None, entity_mp=False):
@@ -61,6 +220,10 @@ class MPNN(nn.Module):
 
         self.is_recurrent = False
 
+        # for test
+        # print('input_size', input_size)    #simple spread: 4
+
+
         if norm_in:
             self.in_fn = nn.BatchNorm1d(self.input_size)
             self.in_fn.weight.data.fill_(1)
@@ -103,6 +266,12 @@ class MPNN(nn.Module):
         # inp - {iden, vel(2), pos(2), entities(...)}
         agent_inp = inp[:,:self.input_size]          
         mask = self.calculate_mask(agent_inp) # shape <batch_size/N,N,N> with 0 for comm allowed, 1 for restricted
+
+        # for test
+        # print('inp', inp.shape)              # 3 agent: (96, 10)            4 agent: (128, 12)
+        # print('agent_inp', agent_inp.shape)   # 3 agent: 有entity (96, 4), 无entity (96, 10)
+        # 4 agent: 有 entity (128, 4)，无 entity (128, 12)
+
 
         h = self.encoder(agent_inp) # should be (batch_size,self.h_dim)
         if self.entity_mp:
@@ -215,6 +384,7 @@ class MultiHeadAttention(nn.Module):
         assert q.size(2) == input_dim
         assert input_dim == self.input_dim, "Wrong embedding dimension of input"
 
+
         hflat = h.contiguous().view(-1, input_dim)
         qflat = q.contiguous().view(-1, input_dim)
 
@@ -223,10 +393,15 @@ class MultiHeadAttention(nn.Module):
         shp_q = (self.n_heads, batch_size, n_query, -1)
 
         # Calculate queries, (n_heads, n_query, graph_size, key/val_size)
-        Q = torch.matmul(qflat, self.W_query).view(shp_q)
+        Q = torch.matmul(qflat, self.W_query).view(shp_q)                      # (1, 96, 1, 128) (1, 32, 3, 128)
         # Calculate keys and values (n_heads, batch_size, graph_size, key/val_size)
-        K = torch.matmul(hflat, self.W_key).view(shp)
+        K = torch.matmul(hflat, self.W_key).view(shp)                         # (1, 96, 3, 128) (1, 32, 3, 128)
         V = torch.matmul(hflat, self.W_val).view(shp)
+
+        # for test
+        # print('K shape', K.shape)
+        # print('Q shape', Q.shape)
+        # print('================')
 
         # Calculate compatibility (n_heads, batch_size, n_query, graph_size)
         compatibility = self.norm_factor * torch.matmul(Q, K.transpose(2, 3))
@@ -235,7 +410,7 @@ class MultiHeadAttention(nn.Module):
             mask = mask.view(1, batch_size, n_query, graph_size).expand_as(compatibility)
             compatibility[mask] = -math.inf
 
-        attn = F.softmax(compatibility, dim=-1)
+        attn = F.softmax(compatibility, dim=-1)            # (1, 32, 3, 3)
 
         # If there are nodes with no neighbours then softmax returns nan so we fix them to 0
         if mask is not None:
@@ -243,13 +418,16 @@ class MultiHeadAttention(nn.Module):
             attnc[mask] = 0
             attn = attnc
 
-        heads = torch.matmul(attn, V)
+        heads = torch.matmul(attn, V)                       # (1, 32, 3, 128)
 
         out = torch.mm(
             heads.permute(1, 2, 0, 3).contiguous().view(-1, self.n_heads * self.val_dim),
             self.W_out.view(-1, self.embed_dim)
-        ).view(batch_size, n_query, self.embed_dim)
+        ).view(batch_size, n_query, self.embed_dim)          # (32, 3, 128)
         
         if return_attn:
             return out, attn
         return out
+
+
+

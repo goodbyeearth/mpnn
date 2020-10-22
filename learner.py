@@ -2,7 +2,7 @@ import numpy as np
 import torch
 from rlcore.algo import JointPPO
 from rlagent import Neo
-from mpnn import MPNN
+from mpnn import MPNN, GatedMPNN
 from utils import make_multiagent_env
 
 
@@ -22,6 +22,18 @@ def setup_master(args, env=None, return_env=False):
             num_adversary += 1
         else:
             num_friendly += 1
+
+    net = args.net
+    if net == 'mpnn':
+        net = MPNN
+    elif net == 'gated_mpnn':
+        net = GatedMPNN
+    else:
+        raise NotImplementedError('Unknown net name')
+    # for test
+    # print(env.action_space, env.action_space[i])
+    # print(env.observation_space, env.observation_space[i])
+
 
     # share a common policy in a team
     action_space = env.action_space[i]
@@ -47,12 +59,12 @@ def setup_master(args, env=None, return_env=False):
 
         if hasattr(agent, 'adversary') and agent.adversary:
             if policy1 is None:
-                policy1 = MPNN(input_size=pol_obs_dim,num_agents=num_adversary,num_entities=num_entities,action_space=action_space,
+                policy1 = net(input_size=pol_obs_dim,num_agents=num_adversary,num_entities=num_entities,action_space=action_space,
                                pos_index=pos_index, mask_dist=args.mask_dist,entity_mp=entity_mp).to(args.device)
             team1.append(Neo(args,policy1,(obs_dim,),action_space))
         else:
             if policy2 is None:
-                policy2 = MPNN(input_size=pol_obs_dim,num_agents=num_friendly,num_entities=num_entities,action_space=action_space,
+                policy2 = net(input_size=pol_obs_dim,num_agents=num_friendly,num_entities=num_entities,action_space=action_space,
                                pos_index=pos_index, mask_dist=args.mask_dist,entity_mp=entity_mp).to(args.device)
             team2.append(Neo(args,policy2,(obs_dim,),action_space))
     master = Learner(args, [team1, team2], [policy1, policy2], env)
@@ -78,6 +90,7 @@ class Learner(object):
         self.device = args.device
         self.env = env
 
+
     @property
     def all_policies(self):
         return [agent.actor_critic.state_dict() for agent in self.all_agents]
@@ -99,6 +112,10 @@ class Learner(object):
             all_obs = torch.cat([agent.rollouts.obs[step] for agent in team])
             all_hidden = torch.cat([agent.rollouts.recurrent_hidden_states[step] for agent in team])
             all_masks = torch.cat([agent.rollouts.masks[step] for agent in team])
+
+            # for test
+            # print('all_obs', all_obs.shape)      # [thread_num * agent_num, obs_shape]
+            # print('==========================================')
 
             props = policy.act(all_obs, all_hidden, all_masks, deterministic=False) # a single forward pass 
 

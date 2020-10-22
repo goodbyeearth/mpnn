@@ -7,7 +7,10 @@ import shutil
 
 def get_args():
     parser = argparse.ArgumentParser(description='RL')
-    
+
+    # net
+    parser.add_argument('--net', default='mpnn')
+
     # environment
     parser.add_argument('--env-name', default='simple_spread', help='one from {simple_spread, simple_formation, simple_line})')
     parser.add_argument('--num-agents', type=int, default=3)
