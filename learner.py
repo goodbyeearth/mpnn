@@ -24,25 +24,26 @@ def setup_master(args, env=None, return_env=False):
             num_friendly += 1
 
     net = args.net
-    if net == 'mpnn':
+    if net == 'amac':
         net = MPNN
-    elif net == 'gated_mpnn':
+    elif net == 'hamac' or net == 'ac-hamac' or net == 'ac-amac':
         net = GatedMPNN
     else:
         raise NotImplementedError('Unknown net name')
-    # for test
+
+    # 测试
     # print(env.action_space, env.action_space[i])
     # print(env.observation_space, env.observation_space[i])
 
 
-    # share a common policy in a team
+    # 参数共享
     action_space = env.action_space[i]
     entity_mp = args.entity_mp
     if args.env_name == 'simple_spread':
         num_entities = args.num_agents
     elif args.env_name == 'simple_formation':
         num_entities = 1
-    elif args.env_name == 'simple_line':
+    elif args.env_name == 'simple_line' or args.env_name == 'traffic_junction':
         num_entities = 2
     else:
         raise NotImplementedError('Unknown environment, define entity_mp for this!')
@@ -52,8 +53,9 @@ def setup_master(args, env=None, return_env=False):
     else:
         pol_obs_dim = env.observation_space[i].shape[0]
 
-    # index at which agent's position is present in its observation
+    # 智能体index
     pos_index = args.identity_size + 2
+
     for i, agent in enumerate(env.world.policy_agents):
         obs_dim = env.observation_space[i].shape[0]
 
@@ -79,7 +81,7 @@ def setup_master(args, env=None, return_env=False):
 
 
 class Learner(object):
-    # supports centralized training of agents in a team
+    # 支持中心化训练
     def __init__(self, args, teams_list, policies_list, env):
         self.teams_list = [x for x in teams_list if len(x)!=0]
         self.all_agents = [agent for team in teams_list for agent in team]
@@ -100,7 +102,7 @@ class Learner(object):
         return self.policies_list[0].attn_mat
 
     def initialize_obs(self, obs):
-        # obs - num_processes x num_agents x obs_dim
+        # obs 维度 - num_processes x num_agents x obs_dim
         for i, agent in enumerate(self.all_agents):
             agent.initialize_obs(torch.from_numpy(obs[:,i,:]).float().to(self.device))
             agent.rollouts.to(self.device)
@@ -108,18 +110,18 @@ class Learner(object):
     def act(self, step):
         actions_list = []
         for team, policy in zip(self.teams_list, self.policies_list):
-            # concatenate all inputs
+            # 所有输出拼接
             all_obs = torch.cat([agent.rollouts.obs[step] for agent in team])
             all_hidden = torch.cat([agent.rollouts.recurrent_hidden_states[step] for agent in team])
             all_masks = torch.cat([agent.rollouts.masks[step] for agent in team])
 
-            # for test
+            # 测试
             # print('all_obs', all_obs.shape)      # [thread_num * agent_num, obs_shape]
             # print('==========================================')
 
-            props = policy.act(all_obs, all_hidden, all_masks, deterministic=False) # a single forward pass 
+            props = policy.act(all_obs, all_hidden, all_masks, deterministic=False)
 
-            # split all outputs
+            # split 所有输出
             n = len(team)
             all_value, all_action, all_action_log_prob, all_states = [torch.chunk(x, n) for x in props]
             for i in range(n):
@@ -133,7 +135,6 @@ class Learner(object):
 
     def update(self):
         return_vals = []
-        # use joint ppo for training each team
         for i, trainer in enumerate(self.trainers_list):
             rollouts_list = [agent.rollouts for agent in self.teams_list[i]]
             vals = trainer.update(rollouts_list)
@@ -169,7 +170,7 @@ class Learner(object):
             agent.load_model(policy)
 
     def eval_act(self, obs, recurrent_hidden_states, mask):
-        # used only while evaluating policies. Assuming that agents are in order of team!
+        # 评估策略时才用
         obs1 = []
         obs2 = []
         all_obs = []

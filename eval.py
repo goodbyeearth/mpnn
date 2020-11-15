@@ -1,21 +1,21 @@
-import numpy as np
-import torch
-from arguments import get_args
-from utils import normalize_obs
-from learner import setup_master
-import time
 
 
 def evaluate(args, seed, policies_list, ob_rms=None, render=False, env=None, master=None, render_attn=True):
     """
-    RL evaluation: supports eval through training code as well as independently
-    policies_list should be a list of policies of all the agents;
-    len(policies_list) = num agents
+    RL evaluation: 训练时或者单独使用均可
+    policies_list 是所有agent策略的list;
+    len(policies_list) = 智能体数量
     """
-    if env is None or master is None: # if any one of them is None, generate both of them
+    import numpy as np
+    import torch
+    from arguments import get_args
+    from utils import normalize_obs
+    from learner import setup_master
+    import time
+    if env is None or master is None: # 其中一个为空则两个都生成
         master, env = setup_master(args, return_env=True)
 
-    if seed is None: # ensure env eval seed is different from training seed
+    if seed is None:
         seed = np.random.randint(0,100000)
     print("Evaluation Seed: ",seed)
     env.seed(seed)
@@ -32,11 +32,10 @@ def evaluate(args, seed, policies_list, ob_rms=None, render=False, env=None, mas
     all_episode_rewards = np.full((num_eval_episodes, env.n), 0.0)
     per_step_rewards = np.full((num_eval_episodes, env.n), 0.0)
 
-    # TODO: provide support for recurrent policies and mask
     recurrent_hidden_states = None
     mask = None
 
-    # world.dists at the end of episode for simple_spread
+    # simple_spread 回合结束时 world.dists
     final_min_dists = []
     num_success = 0
     episode_length = 0
@@ -73,7 +72,7 @@ def evaluate(args, seed, policies_list, ob_rms=None, render=False, env=None, mas
         num_success += info['n'][0]['is_success']
         episode_length = (episode_length*t + info['n'][0]['world_steps'])/(t+1)
 
-        # for simple spread env only
+        # simple spread
         if args.env_name == 'simple_spread':
             final_min_dists.append(env.world.min_dists)
         elif args.env_name == 'simple_formation' or args.env_name=='simple_line':
@@ -92,13 +91,19 @@ def evaluate(args, seed, policies_list, ob_rms=None, render=False, env=None, mas
 
 
 if __name__ == '__main__':
+    from arguments import get_args
+    # from utils import normalize_obs
+    # from learner import setup_master
+    # import time
     args = get_args()
-    checkpoint = torch.load(args.load_dir, map_location=lambda storage, loc: storage)
-    policies_list = checkpoint['models']
-    ob_rms = checkpoint['ob_rms']
-    all_episode_rewards, per_step_rewards, final_min_dists, num_success, episode_length = evaluate(args, args.seed, 
-                    policies_list, ob_rms, args.render, render_attn=args.masking)
-    print("Average Per Step Reward {}\nNum Success {}/{} | Av. Episode Length {:.2f})"
-            .format(per_step_rewards.mean(0),num_success,args.num_eval_episodes,episode_length))
-    if final_min_dists:
-        print("Final Min Dists {}".format(np.stack(final_min_dists).mean(0)))
+    from tmp import eval
+    eval(args)
+    # checkpoint = torch.load(args.load_dir, map_location=lambda storage, loc: storage)
+    # policies_list = checkpoint['models']
+    # ob_rms = checkpoint['ob_rms']
+    # all_episode_rewards, per_step_rewards, final_min_dists, num_success, episode_length = evaluate(args, args.seed,
+    #                 policies_list, ob_rms, args.render, render_attn=args.masking)
+    # print("Average Per Step Reward {}\nNum Success {}/{} | Av. Episode Length {:.2f})"
+    #         .format(per_step_rewards.mean(0),num_success,args.num_eval_episodes,episode_length))
+    # if final_min_dists:
+    #     print("Final Min Dists {}".format(np.stack(final_min_dists).mean(0)))

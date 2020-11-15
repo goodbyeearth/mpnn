@@ -4,8 +4,9 @@ import random
 from arguments import get_args
 import torch
 from argparse import Namespace
+import os
 
-
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 np.set_printoptions(suppress=True, precision=4)
 
 
@@ -20,7 +21,8 @@ if __name__ == '__main__':
     if args.cuda:
         torch.cuda.manual_seed(args.seed)
 
-    NA = [3,5,7,10]
+    # NA = [3,5,7,10]
+    NA = [4, 6, 8]
     last_savedir = None
     args_copy = Namespace(**vars(args))
     if args.identity_size>0:

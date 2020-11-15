@@ -12,17 +12,16 @@ from eval import evaluate
 from learner import setup_master
 from pprint import pprint
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+os.environ["CUDA_VISIBLE_DEVICES"] = "3"
 
 np.set_printoptions(suppress=True, precision=4)
-
 
 def train(args, return_early=False):
     # print('999999999999-----------------------------!!!!!!!+++++++++++')
     writer = SummaryWriter(args.log_dir)    
     envs = utils.make_parallel_envs(args) 
     master = setup_master(args) 
-    # used during evaluation only
+    # evaluate 时用
     eval_master, eval_env = setup_master(args, return_env=True) 
     obs = envs.reset() # shape - num_processes x num_agents x obs_dim
     master.initialize_obs(obs)
@@ -30,7 +29,7 @@ def train(args, return_early=False):
     episode_rewards = torch.zeros([args.num_processes, n], device=args.device)
     final_rewards = torch.zeros([args.num_processes, n], device=args.device)
 
-    # start simulations
+
     start = datetime.datetime.now()
     for j in range(args.num_updates):
         # print('888888888-----------------------------!!!!!!!+++++++++++')
@@ -117,6 +116,7 @@ def train(args, return_early=False):
     writer.close()
     if return_early:
         return savedir
+
 
 if __name__ == '__main__':
     args = get_args()
