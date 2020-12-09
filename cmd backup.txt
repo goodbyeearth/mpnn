@@ -1,0 +1,33 @@
+ps -ef | grep agent10 | awk '{print $2}' | xargs kill 
+tensorboard --logdir . --port=12001
+
+1、训练
+普通训练
+nohup python main.py --env-name simple_spread --num-agents 3 --save-dir g_agent3 --net amac >/root/marlsave/terminal_log/g_agent3 2>&1 &
+nohup python main.py --env-name simple_formation --num-agents 5 --save-dir form_g_agent5 --net amac >/root/marlsave/terminal_log/form_g_agent5 2>&1 &
+nohup python main.py --env-name simple_line --num-agents 3 --save-dir line_g_agent3 --net amac >/root/marlsave/terminal_log/line_g_agent3 2>&1 &
+
+nohup python main.py --env-name traffic_junction --num-agents 3 --save-dir line_g_agent3 --net amac >/root/marlsave/terminal_log/line_g_agent3 2>&1 &
+
+
+课程学习：
+python automate.py --env-name simple_spread --save-dir curr_agent4 --net amac
+
+
+
+
+2、测试
+tj
+python eval.py --env-name tj --num-agent 0 --net amac
+python eval.py --env-name tj --num-agent 1 --net amac
+
+sp
+python eval.py --env-name simple_spread --num-agent 4 --net amac
+python eval.py --env-name simple_spread --num-agent 6 --net amac
+
+python eval.py --env-name simple_spread --num-agent 6 --net amac --curr
+
+
+
+
+
