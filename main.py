@@ -18,7 +18,6 @@ np.set_printoptions(suppress=True, precision=4)
 
 
 def train(args, return_early=False):
-    # print('999999999999-----------------------------!!!!!!!+++++++++++')
     writer = SummaryWriter(args.log_dir)    
     envs = utils.make_parallel_envs(args) 
     master = setup_master(args) 
@@ -33,7 +32,6 @@ def train(args, return_early=False):
     # start simulations
     start = datetime.datetime.now()
     for j in range(args.num_updates):
-        # print('888888888-----------------------------!!!!!!!+++++++++++')
         for step in range(args.num_steps):
             with torch.no_grad():
                 actions_list = master.act(step)
@@ -47,8 +45,7 @@ def train(args, return_early=False):
             episode_rewards *= masks
 
             master.update_rollout(obs, reward, masks)
-            # print('00000-----------------------------!!!!!!!+++++++++++')
-        # print('1111-----------------------------!!!!!!!+++++++++++')
+            
         master.wrap_horizon()
         return_vals = master.update()
         value_loss = return_vals[:, 0]
@@ -56,7 +53,6 @@ def train(args, return_early=False):
         dist_entropy = return_vals[:, 2]
         master.after_update()
 
-        # print('2222-----------------------------!!!!!!!+++++++++++')
         if j%args.save_interval == 0 and not args.test:
             savedict = {'models': [agent.actor_critic.state_dict() for agent in master.all_agents]}
             ob_rms = (None, None) if envs.ob_rms is None else (envs.ob_rms[0].mean, envs.ob_rms[0].var)

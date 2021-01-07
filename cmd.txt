@@ -1,0 +1,18 @@
+ps -ef | grep agent10 | awk '{print $2}' | xargs kill 
+tensorboard --logdir . --port=12001
+
+普通训练
+nohup python main.py --env-name simple_spread --num-agents 3 --save-dir g_agent3 --net gated_mpnn >/root/marlsave/terminal_log/g_agent3 2>&1 &
+
+nohup python main.py --env-name simple_formation --num-agents 5 --save-dir form_g_agent5 --net gated_mpnn >/root/marlsave/terminal_log/form_g_agent5 2>&1 &
+nohup python main.py --env-name simple_line --num-agents 3 --save-dir line_g_agent3 --net gated_mpnn >/root/marlsave/terminal_log/line_g_agent3 2>&1 &
+
+
+
+
+课程学习：
+python automate.py --env-name simple_spread --save-dir curr_agent4 --net gated_mpnn
+
+
+
+

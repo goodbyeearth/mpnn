@@ -21,15 +21,15 @@ class GatedMPNN(nn.Module):
 
         self.h_dim = hidden_dim
         self.nonlin = nonlin
-        self.num_agents = num_agents  # number of agents
-        self.num_entities = num_entities  # number of entities
-        self.K = 3  # message passing rounds
+        self.num_agents = num_agents  # 智能体数量
+        self.num_entities = num_entities  # entities 数量
+        self.K = 3  # 信息传递数
         self.embed_dim = self.h_dim if embed_dim is None else embed_dim
         self.n_heads = n_heads
         self.mask_dist = mask_dist
         self.input_size = input_size
         self.entity_mp = entity_mp
-        # this index must be from the beginning of observation vector
+
         self.pos_index = pos_index
 
         self.encoder = nn.Sequential(nn.Linear(self.input_size, self.h_dim),
@@ -47,7 +47,7 @@ class GatedMPNN(nn.Module):
         self.policy_head = nn.Sequential(nn.Linear(self.h_dim, self.h_dim),
                                          self.nonlin(inplace=True))
 
-        # gate
+        # 加了门
         self.gate = nn.Sequential(nn.Linear(self.h_dim + self.embed_dim, 1),
                                   nn.Sigmoid())
 
@@ -65,7 +65,7 @@ class GatedMPNN(nn.Module):
 
         self.is_recurrent = False
 
-        # for test
+        # 测试
         # print('input_size', input_size)    #simple spread: 4
 
         if norm_in:
@@ -81,8 +81,7 @@ class GatedMPNN(nn.Module):
         self.dropout_mask = None
 
     def calculate_mask(self, inp):
-        # inp is batch_size x self.input_size where batch_size is num_processes*num_agents
-
+        # inp 的 shape: batch_size x self.input_size，其中batch_size = 进程数*智能体数
         pos = inp[:, self.pos_index:self.pos_index + 2]
         bsz = inp.size(0) // self.num_agents
         mask = torch.full(size=(bsz, self.num_agents, self.num_agents), fill_value=0, dtype=torch.uint8)
@@ -97,7 +96,7 @@ class GatedMPNN(nn.Module):
 
         elif self.mask_dist is not None and self.mask_dist == -10:
             if self.dropout_mask is None or bsz != self.dropout_mask.shape[
-                0] or np.random.random_sample() < 0.1:  # sample new dropout mask
+                0] or np.random.random_sample() < 0.1:  # dropout
                 temp = torch.rand(mask.size()) > 0.85
                 temp.diagonal(dim1=1, dim2=2).fill_(0)
                 self.dropout_mask = (temp + temp.transpose(1, 2)) != 0
@@ -106,12 +105,12 @@ class GatedMPNN(nn.Module):
         return mask
 
     def _fwd(self, inp):
-        # inp should be (batch_size,input_size)
+        # inp 形状应该时 (batch_size,input_size)
         # inp - {iden, vel(2), pos(2), entities(...)}
         agent_inp = inp[:, :self.input_size]
-        mask = self.calculate_mask(agent_inp)  # shape <batch_size/N,N,N> with 0 for comm allowed, 1 for restricted
+        mask = self.calculate_mask(agent_inp)  # 形状 <batch_size/N,N,N>，0允许通信，1不允许
 
-        # for test
+        # 测试
         # print('inp', inp.shape)              # 3 agent: (96, 10)            4 agent: (128, 12)
         # print('agent_inp', agent_inp.shape)   # 3 agent: 有entity (96, 4), 无entity (96, 10)
         # 4 agent: 有 entity (128, 4)，无 entity (128, 12)
@@ -119,17 +118,17 @@ class GatedMPNN(nn.Module):
         h = self.encoder(agent_inp)  # should be (batch_size,self.h_dim)
         if self.entity_mp:
             landmark_inp = inp[:, self.input_size:]  # x,y pos of landmarks wrt agents
-            # should be (batch_size,self.num_entities,self.h_dim)
+            # 应该是 (batch_size,self.num_entities,self.h_dim)
             he = self.entity_encoder(landmark_inp.contiguous().view(-1, 2)).view(-1, self.num_entities, self.h_dim)
-            entity_message = self.entity_messages(h.unsqueeze(1), he).squeeze(1)  # should be (batch_size,self.h_dim)
-            h = self.entity_update(torch.cat((h, entity_message), 1))  # should be (batch_size,self.h_dim)
+            entity_message = self.entity_messages(h.unsqueeze(1), he).squeeze(1)  # 应该是 (batch_size,self.h_dim)
+            h = self.entity_update(torch.cat((h, entity_message), 1))  # 应该是 (batch_size,self.h_dim)
 
-        h = h.view(self.num_agents, -1, self.h_dim).transpose(0, 1)  # should be (batch_size/N,N,self.h_dim)
+        h = h.view(self.num_agents, -1, self.h_dim).transpose(0, 1)  # 应该是 (batch_size/N,N,self.h_dim)
 
         for k in range(self.K):
-            m, attn = self.messages(h, mask=mask, return_attn=True)  # should be <batch_size/N,N,self.embed_dim>
-            hm_concat = torch.cat((h, m), 2)     # <batch_size/N,N,self.h_dim + self.embed_dim>
-            h = self.update(hm_concat)  # should be <batch_size/N,N,self.h_dim>
+            m, attn = self.messages(h, mask=mask, return_attn=True)  # 应该是 <batch_size/N,N,self.embed_dim>
+            hm_concat = torch.cat((h, m), 2)     # 应该是 <batch_size/N,N,self.h_dim + self.embed_dim>
+            h = self.update(hm_concat)  # 应该是 <batch_size/N,N,self.h_dim>
             if k == self.K - 1:
                 gate = self.gate(hm_concat)
                 h = gate * h
@@ -137,7 +136,7 @@ class GatedMPNN(nn.Module):
         h = h.transpose(0, 1).contiguous().view(-1, self.h_dim)
 
         self.attn_mat = attn.squeeze().detach().cpu().numpy()
-        return h  # should be <batch_size, self.h_dim> again
+        return h  # 应该是 <batch_size, self.h_dim>
 
     def forward(self, inp, state, mask=None):
         raise NotImplementedError
@@ -180,15 +179,15 @@ class MPNN(nn.Module):
 
         self.h_dim = hidden_dim
         self.nonlin = nonlin
-        self.num_agents = num_agents # number of agents
-        self.num_entities = num_entities # number of entities
-        self.K = 3 # message passing rounds
+        self.num_agents = num_agents # 智能体数量
+        self.num_entities = num_entities # entities 数量
+        self.K = 3
         self.embed_dim = self.h_dim if embed_dim is None else embed_dim
         self.n_heads = n_heads
         self.mask_dist = mask_dist
         self.input_size = input_size
         self.entity_mp = entity_mp
-        # this index must be from the beginning of observation vector
+
         self.pos_index = pos_index
 
         self.encoder = nn.Sequential(nn.Linear(self.input_size,self.h_dim),
@@ -220,7 +219,7 @@ class MPNN(nn.Module):
 
         self.is_recurrent = False
 
-        # for test
+        # 测试
         # print('input_size', input_size)    #simple spread: 4
 
 
@@ -237,7 +236,7 @@ class MPNN(nn.Module):
         self.dropout_mask = None
 
     def calculate_mask(self, inp):
-        # inp is batch_size x self.input_size where batch_size is num_processes*num_agents
+        # inp 的 shape: batch_size x self.input_size，其中batch_size = 进程数*智能体数
         
         pos = inp[:, self.pos_index:self.pos_index+2]
         bsz = inp.size(0)//self.num_agents
@@ -252,7 +251,7 @@ class MPNN(nn.Module):
                     mask[:,x,(x+i)%self.num_agents].copy_(restrict[bsz*x:bsz*(x+1)])
         
         elif self.mask_dist is not None and self.mask_dist == -10:
-           if self.dropout_mask is None or bsz!=self.dropout_mask.shape[0] or np.random.random_sample() < 0.1: # sample new dropout mask
+           if self.dropout_mask is None or bsz!=self.dropout_mask.shape[0] or np.random.random_sample() < 0.1:
                temp = torch.rand(mask.size()) > 0.85
                temp.diagonal(dim1=1,dim2=2).fill_(0)
                self.dropout_mask = (temp+temp.transpose(1,2))!=0
@@ -262,34 +261,34 @@ class MPNN(nn.Module):
 
 
     def _fwd(self, inp):
-        # inp should be (batch_size,input_size)
+        # inp 应该是 (batch_size,input_size)
         # inp - {iden, vel(2), pos(2), entities(...)}
         agent_inp = inp[:,:self.input_size]          
         mask = self.calculate_mask(agent_inp) # shape <batch_size/N,N,N> with 0 for comm allowed, 1 for restricted
 
-        # for test
+        # 测试
         # print('inp', inp.shape)              # 3 agent: (96, 10)            4 agent: (128, 12)
         # print('agent_inp', agent_inp.shape)   # 3 agent: 有entity (96, 4), 无entity (96, 10)
         # 4 agent: 有 entity (128, 4)，无 entity (128, 12)
 
 
-        h = self.encoder(agent_inp) # should be (batch_size,self.h_dim)
+        h = self.encoder(agent_inp) # 应该是 (batch_size,self.h_dim)
         if self.entity_mp:
             landmark_inp = inp[:,self.input_size:] # x,y pos of landmarks wrt agents
-            # should be (batch_size,self.num_entities,self.h_dim)
+            # 应该是 (batch_size,self.num_entities,self.h_dim)
             he = self.entity_encoder(landmark_inp.contiguous().view(-1,2)).view(-1,self.num_entities,self.h_dim) 
-            entity_message = self.entity_messages(h.unsqueeze(1),he).squeeze(1) # should be (batch_size,self.h_dim)
-            h = self.entity_update(torch.cat((h,entity_message),1)) # should be (batch_size,self.h_dim)
+            entity_message = self.entity_messages(h.unsqueeze(1),he).squeeze(1) # 应该是 (batch_size,self.h_dim)
+            h = self.entity_update(torch.cat((h,entity_message),1)) # 应该是 (batch_size,self.h_dim)
 
-        h = h.view(self.num_agents,-1,self.h_dim).transpose(0,1) # should be (batch_size/N,N,self.h_dim)
+        h = h.view(self.num_agents,-1,self.h_dim).transpose(0,1) # 应该是 (batch_size/N,N,self.h_dim)
         
         for k in range(self.K):
-            m, attn = self.messages(h, mask=mask, return_attn=True) # should be <batch_size/N,N,self.embed_dim>
-            h = self.update(torch.cat((h,m),2)) # should be <batch_size/N,N,self.h_dim>
+            m, attn = self.messages(h, mask=mask, return_attn=True) # 应该是 <batch_size/N,N,self.embed_dim>
+            h = self.update(torch.cat((h,m),2)) # 应该是 <batch_size/N,N,self.h_dim>
         h = h.transpose(0,1).contiguous().view(-1,self.h_dim)
         
         self.attn_mat = attn.squeeze().detach().cpu().numpy()
-        return h # should be <batch_size, self.h_dim> again
+        return h # 应该是 <batch_size, self.h_dim> again
 
     def forward(self, inp, state, mask=None):
         raise NotImplementedError
@@ -326,7 +325,7 @@ class MPNN(nn.Module):
 
 
 class MultiHeadAttention(nn.Module):
-    # taken from https://github.com/wouterkool/attention-tsp/blob/master/graph_encoder.py
+    # 取自 https://github.com/wouterkool/attention-tsp/blob/master/graph_encoder.py
     def __init__(
             self,
             n_heads,
@@ -377,7 +376,7 @@ class MultiHeadAttention(nn.Module):
         if h is None:
             h = q  # compute self-attention
 
-        # h should be (batch_size, graph_size, input_dim)
+        # h 应该是 (batch_size, graph_size, input_dim)
         batch_size, graph_size, input_dim = h.size()
         n_query = q.size(1)
         assert q.size(0) == batch_size
@@ -398,7 +397,7 @@ class MultiHeadAttention(nn.Module):
         K = torch.matmul(hflat, self.W_key).view(shp)                         # (1, 96, 3, 128) (1, 32, 3, 128)
         V = torch.matmul(hflat, self.W_val).view(shp)
 
-        # for test
+        # 测试
         # print('K shape', K.shape)
         # print('Q shape', Q.shape)
         # print('================')
